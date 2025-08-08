@@ -1,0 +1,17 @@
+Flask
+flask-cors
+pandas
+numpy
+pinecone
+fuzzywuzzy
+python-levenshtein
+python-dotenv
+gunicorn
+scikit-learn
+requests
+SpeechRecognition  
+google-generativeai
+pydub
+sarvamai
+supabase
+google-genai
