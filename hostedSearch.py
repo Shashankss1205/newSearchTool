@@ -151,6 +151,9 @@ def decompose_query(query: str) -> List[str]:
 
         "black cat" →
         black cat
+
+        "lion stories" →
+        lion 
         
         "good behaviour with siblings" →
         good behaviour with siblings
@@ -174,6 +177,101 @@ def decompose_query(query: str) -> List[str]:
         logger.error(f"Query decomposition error: {e}")
         return [query]  # Return original query as fallback
 
+def translate_refine_and_decompose(text: str) -> List[str]:
+    """
+    Use Gemini to:
+    1. Translate input to English if necessary
+    2. Strip story-related phrases and conversational prefixes
+    3. Decompose the refined query into searchable concepts
+    4. Return list of clean, meaningful search terms
+
+    Returns:
+        List[str]: List of cleaned concepts suitable for search
+    """
+    try:
+        prompt = f"""
+You are a query processing assistant for a story search engine. Perform these steps in order:
+
+STEP 1: TRANSLATION & CLEANING
+- Translate the input to English if it's in a different language
+- Remove common filler phrases related to stories: "story of", "stories about", "a tale on", "book of", "novel about", "tell me", "give me", "show me", "I want a story about", etc.
+- Remove extra articles like "a", "the" unless they're essential to meaning
+- Keep only the essential topic/subject
+
+STEP 2: DECOMPOSITION  
+- Break the cleaned query into individual searchable concepts
+- Each concept should be meaningful for story search
+- Keep related words together (e.g., "underwater animals", "good behavior")
+- If the query is a single simple concept, return just that concept
+
+OUTPUT FORMAT:
+Return only the final concepts, one per line, no numbering or bullets.
+
+EXAMPLES:
+
+Input: "Tell me a story of brave teenagers"
+Output:
+brave teenagers
+
+Input: "Muéstrame una historia sobre la valentía y la amistad"
+Output:
+bravery
+friendship
+
+Input: "Give me a novel about freedom fighters from Kerala"
+Output:
+freedom fighters
+Kerala
+
+Input: "A tale on friendship underwater animals"
+Output:
+friendship
+underwater animals
+
+Input: "good behaviour with siblings"
+Output:
+good behaviour with siblings
+
+Input: "motivational student success"
+Output:
+motivational
+student
+success
+
+Now process this input:
+{text}
+"""
+
+        # Gemini setup
+        gemini_api_key = os.getenv('GOOGLE_API_KEY')
+        model_name = os.getenv('GEMINI_MODEL', 'gemini-2.5-flash')
+        generative_ai.configure(api_key=gemini_api_key)
+        model = generative_ai.GenerativeModel(model_name)
+
+        response = model.generate_content(prompt)
+        
+        # Parse the response into concepts
+        concepts = [concept.strip() for concept in response.text.strip().split('\n') if concept.strip()]
+        
+        # Fallback to original text if processing fails
+        return concepts if concepts else [text.strip()]
+
+    except Exception as e:
+        logging.error(f"Gemini API error: {e}")
+        # Fallback: basic cleaning without AI
+        cleaned = text.lower().strip()
+        # Remove common prefixes manually as fallback
+        prefixes_to_remove = [
+            "tell me a story about", "tell me about", "give me a story about", 
+            "show me a story about", "story of", "stories about", "book about", 
+            "novel about", "tale about", "a tale on"
+        ]
+        for prefix in prefixes_to_remove:
+            if cleaned.startswith(prefix):
+                cleaned = cleaned[len(prefix):].strip()
+                break
+        return [cleaned] if cleaned else [text.strip()]
+
 class VoiceHandler:
     """Handle speech-to-text using SarvamAI Saarika (v2.5)"""
 
@@ -184,7 +282,7 @@ class VoiceHandler:
         self.client = SarvamAI(api_subscription_key=self.api_key)
 
     def speech_to_text(self, audio_path: str,
-                       model: str = "saarika:v2.5",
+                       model: str = "saarika:flash",
                        language_code: str = "unknown"):
         """
         Transcribe audio via SarvamAI:
@@ -524,7 +622,8 @@ class StorySearchEngine:
             'theme_primary', 'theme_secondary', 
             'events_primary', 'events_secondary',
             'emotions_primary', 'emotions_secondary',
-            'setting_primary', 'setting_secondary'
+            'setting_primary', 'setting_secondary',
+            'character_primary', 'character_secondary', 'keywords'
         ]
         
         # Keyword fields (exact/fuzzy matching)
@@ -1337,7 +1436,6 @@ class StorySearchEngine:
     #         json.dump(results, f, default=lambda o: o.__dict__, indent=2)
     #     return results
 
-
     # def search(self, query: str, top_k: int = 20) -> List[SearchResult]:
     #     """Search stories using hybrid approach with query decomposition"""
     #     if not query.strip():
@@ -1449,6 +1547,8 @@ class StorySearchEngine:
                     story_id = match['metadata']['story_id']
                     field = match['metadata']['field']
                     score = match['score']
+                    if field in ['events_primary', 'events_secondary']:
+                        score *= 1.5
 
                     # Only include if story exists in local memory
                     if story_id in self.stories and score >= 0.6:
@@ -1521,9 +1621,30 @@ class StorySearchEngine:
             logger.warning("No stories loaded in memory")
             return []
         
+        # Extract the results from events and the full query
+        # events_results = self.search_single_concept(query, top_k)
+        # search_results = []
+        # for story_id, result_data in events_results.items():
+        #     if result_data['total_score'] > 0:
+        #         matched_fields = result_data.get('matched_fields', result_data.get('scores', {}))
+        #         largest_field = max(matched_fields, key=matched_fields.get)
+                
+        #         if largest_field in ['events_primary', 'events_secondary']:
+        #             if matched_fields.get('events_primary', 0) > 0 or matched_fields.get('events_secondary', 0) > 0:
+        #                 search_results.append(SearchResult(
+        #                     story=result_data['story'],
+        #                     score=result_data['total_score'],
+        #                     matched_fields=matched_fields
+        #                 ))
+
         # Decompose query into concepts
-        concepts = decompose_query(query)
-        logger.info(f"Decomposed query '{query}' into concepts: {concepts}")
+        # concepts = decompose_query(query)
+
+        query = translate_refine_and_decompose(query)
+        print(query)
+
+        concepts = query
+        logger.info(f"Decomposed query concepts: {concepts}")
         
         # If only one concept, use original logic
         if len(concepts) == 1:
@@ -2375,6 +2496,8 @@ HTML_TEMPLATE = r"""
         let mediaRecorder;
         let audioChunks = [];
 
+        // Updated voice search functionality - replace the existing voice search code
+
         voiceSearchBtn.addEventListener('click', async () => {
             if (!isRecording) {
                 try {
@@ -2387,7 +2510,7 @@ HTML_TEMPLATE = r"""
                     
                     mediaRecorder.onstop = async () => {
                         const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
-                        await sendVoiceSearch(audioBlob);
+                        await processVoiceSearch(audioBlob);
                         audioChunks = [];
                     };
                     
@@ -2409,6 +2532,105 @@ HTML_TEMPLATE = r"""
                 voiceSearchBtn.disabled = true;
             }
         });
+
+        async function processVoiceSearch(audioBlob) {
+            try {
+                // Step 1: Transcribe audio
+                voiceText.textContent = 'Transcribing...';
+                const transcribedQuery = await transcribeAudio(audioBlob);
+                
+                // Step 2: Show transcribed text immediately
+                searchInput.value = transcribedQuery;
+                voiceText.textContent = 'Searching...';
+                
+                // Optional: Show transcription notification
+                showTranscriptionResult(transcribedQuery);
+                
+                // Step 3: Perform search
+                const searchResults = await performVoiceSearchWithQuery(transcribedQuery);
+                
+                // Step 4: Show results
+                renderResults(searchResults || [], transcribedQuery);
+                
+            } catch (error) {
+                showError('Voice search failed: ' + error.message);
+            } finally {
+                // Reset button
+                resetVoiceButton();
+            }
+        }
+
+        async function transcribeAudio(audioBlob) {
+            const formData = new FormData();
+            formData.append('audio', audioBlob, 'voice_search.wav');
+            
+            const response = await fetch('/transcribe-audio', {
+                method: 'POST',
+                body: formData
+            });
+            
+            if (!response.ok) {
+                throw new Error('Transcription failed');
+            }
+            
+            const data = await response.json();
+            
+            // Use translated query if available, otherwise use original
+            return data.original_query;
+        }
+
+        async function performVoiceSearchWithQuery(query) {
+            const response = await fetch('/voice-search', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    query: query,
+                    top_k: 20
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Search failed');
+            }
+            
+            const data = await response.json();
+            return data.results;
+        }
+
+        function showTranscriptionResult(query) {
+            // Create a temporary notification showing the transcribed text
+            const notification = document.createElement('div');
+            notification.className = 'fixed top-20 right-4 bg-blue-50 border border-blue-200 rounded-lg p-4 shadow-lg z-50 max-w-sm';
+            notification.innerHTML = `
+                <div class="flex items-start">
+                    <svg class="w-5 h-5 text-blue-500 mr-2 mt-0.5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11a7 7 0 01-7 7m0 0a7 7 0 01-7-7m7 7v4m0 0H8m4 0h4m-4-8a3 3 0 01-3-3V5a3 3 0 116 0v6a3 3 0 01-3 3z"></path>
+                    </svg>
+                    <div>
+                        <p class="text-sm font-medium text-blue-900">Voice recognized:</p>
+                        <p class="text-sm text-blue-700 mt-1">"${query}"</p>
+                    </div>
+                </div>
+            `;
+            
+            document.body.appendChild(notification);
+            
+            // Auto-remove after 4 seconds
+            setTimeout(() => {
+                if (notification.parentNode) {
+                    notification.remove();
+                }
+            }, 4000);
+        }
+
+        function resetVoiceButton() {
+            voiceText.textContent = 'Voice Search';
+            voiceSearchBtn.disabled = false;
+            voiceSearchBtn.classList.remove('bg-red-600');
+            voiceSearchBtn.classList.add('bg-green-600');
+        }
 
         async function sendVoiceSearch(audioBlob) {
             try {
@@ -2701,8 +2923,8 @@ def search_stories():
         # Perform search
         # query = translate_to_english(query)
         # query = refine_semantic_query(query)
-        query = translate_and_refine(query)
-        print(f"Search query: {query}")
+        # query = translate_and_refine(query)
+        # print(f"Search query: {query}")
         results = search_engine.search(query, top_k)
         
         # Convert results to JSON-serializable format
@@ -2783,9 +3005,81 @@ def submit_feedback():
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 
-@app.route('/voice-search', methods=['POST'])
-def voice_search():
-    """Handle voice search"""
+# @app.route('/voice-search', methods=['POST'])
+# def voice_search():
+#     """Handle voice search"""
+#     try:
+#         if 'audio' not in request.files:
+#             return jsonify({'error': 'No audio file provided'}), 400
+        
+#         audio_file = request.files['audio']
+#         if audio_file.filename == '':
+#             return jsonify({'error': 'No audio file selected'}), 400
+        
+#         # Save temporary uploaded file
+#         filename = secure_filename(audio_file.filename)
+#         raw_path = f"temp_raw_{filename}"
+#         audio_file.save(raw_path)
+
+#         # Convert to 16-bit mono PCM WAV using pydub
+#         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
+#             sound = AudioSegment.from_file(raw_path)
+#             sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
+#             sound.export(tmp_wav.name, format="wav")
+#             converted_path = tmp_wav.name
+
+#         try:
+#             # Convert speech to text
+#             voice_query = voice_handler.speech_to_text(converted_path)
+#             print(f"Voice query: {voice_query}")
+#             # Enhance query with Gemini
+#             # enhanced_query = voice_handler.enhance_query_with_gemini(voice_query)
+#             enhanced_query = voice_query
+#             # query = enhanced_query
+#             # f_query = get_font(query)
+#             # print(f"Voice query: (translated: {f_query})")
+#             query = voice_query
+#             query = translate_to_english(query)
+#             print(f"Search query: {query}")
+#             # Perform search
+#             results = search_engine.search(query, 20)
+
+#             # Prepare response
+#             response_data = []
+#             for result in results:
+#                 story_dict = asdict(result.story)
+#                 score = float(result.score) if result.score is not None else 0.0
+#                 matched_fields = {
+#                     field: float(score) if score is not None else 0.0
+#                     for field, score in result.matched_fields.items()
+#                 }
+#                 response_data.append({
+#                     'story': story_dict,
+#                     'score': score,
+#                     'matched_fields': matched_fields
+#                 })
+
+#             return jsonify({
+#                 'original_query': voice_query,
+#                 'enhanced_query': enhanced_query,
+#                 'results': response_data,
+#                 'total_found': len(response_data)
+#             })
+
+#         finally:
+#             # Cleanup
+#             if os.path.exists(raw_path):
+#                 os.remove(raw_path)
+#             if os.path.exists(converted_path):
+#                 os.remove(converted_path)
+
+#     except Exception as e:
+#         logger.error(f"Voice search error: {e}")
+#         return jsonify({'error': 'Voice search failed'}), 500
+
+@app.route('/transcribe-audio', methods=['POST'])
+def transcribe_audio():
+    """Handle audio transcription only"""
     try:
         if 'audio' not in request.files:
             return jsonify({'error': 'No audio file provided'}), 400
@@ -2798,58 +3092,72 @@ def voice_search():
         filename = secure_filename(audio_file.filename)
         raw_path = f"temp_raw_{filename}"
         audio_file.save(raw_path)
-
+        
         # Convert to 16-bit mono PCM WAV using pydub
         with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_wav:
             sound = AudioSegment.from_file(raw_path)
             sound = sound.set_channels(1).set_frame_rate(16000).set_sample_width(2)
             sound.export(tmp_wav.name, format="wav")
             converted_path = tmp_wav.name
-
+        
         try:
             # Convert speech to text
             voice_query = voice_handler.speech_to_text(converted_path)
-
-            # Enhance query with Gemini
-            # enhanced_query = voice_handler.enhance_query_with_gemini(voice_query)
-            enhanced_query = voice_query
-            query = enhanced_query
-            f_query = get_font(query)
-            print(f"Voice query: (translated: {f_query})")
-            query = translate_to_english(query)
-            print(f"Search query: {query}")
-            # Perform search
-            results = search_engine.search(query, 20)
-
-            # Prepare response
-            response_data = []
-            for result in results:
-                story_dict = asdict(result.story)
-                score = float(result.score) if result.score is not None else 0.0
-                matched_fields = {
-                    field: float(score) if score is not None else 0.0
-                    for field, score in result.matched_fields.items()
-                }
-                response_data.append({
-                    'story': story_dict,
-                    'score': score,
-                    'matched_fields': matched_fields
-                })
-
+            print(f"Transcribed: {voice_query}")
+            
             return jsonify({
                 'original_query': voice_query,
-                'enhanced_query': enhanced_query,
-                'results': response_data,
-                'total_found': len(response_data)
+                'success': True
             })
-
+            
         finally:
             # Cleanup
             if os.path.exists(raw_path):
                 os.remove(raw_path)
             if os.path.exists(converted_path):
                 os.remove(converted_path)
+                
+    except Exception as e:
+        logger.error(f"Transcription error: {e}")
+        return jsonify({'error': 'Transcription failed'}), 500
 
+@app.route('/voice-search', methods=['POST'])
+def voice_search():
+    """Handle voice search with pre-transcribed query"""
+    try:
+        data = request.get_json()
+        if not data or 'query' not in data:
+            return jsonify({'error': 'No query provided'}), 400
+            
+        query = data['query']
+        top_k = data.get('top_k', 20)
+        
+        print(f"Voice search query: {query}")
+        
+
+        # Perform search
+        results = search_engine.search(query, top_k)
+        
+        # Prepare response
+        response_data = []
+        for result in results:
+            story_dict = asdict(result.story)
+            score = float(result.score) if result.score is not None else 0.0
+            matched_fields = {
+                field: float(score) if score is not None else 0.0 
+                for field, score in result.matched_fields.items()
+            }
+            response_data.append({
+                'story': story_dict,
+                'score': score,
+                'matched_fields': matched_fields
+            })
+        
+        return jsonify({
+            'results': response_data,
+            'total_found': len(response_data)
+        })
+        
     except Exception as e:
         logger.error(f"Voice search error: {e}")
         return jsonify({'error': 'Voice search failed'}), 500
