@@ -282,7 +282,7 @@ class VoiceHandler:
         self.client = SarvamAI(api_subscription_key=self.api_key)
 
     def speech_to_text(self, audio_path: str,
-                       model: str = "saarika:flash",
+                       model: str = "saarika:v2.5",
                        language_code: str = "unknown"):
         """
         Transcribe audio via SarvamAI:
