@@ -326,8 +326,8 @@ class APIEmbeddingModel:
             
         elif self.provider == 'google':
             self.api_key = os.getenv('GOOGLE_API_KEY')
-            self.base_url = "https://generativelanguage.googleapis.com/v1beta/models/embedding-001:embedContent"
-            self.model_name = "embedding-001"
+            self.base_url = "https://generativelanguage.googleapis.com/v1/models/gemini-embedding-001:embedContent"
+            self.model_name = "gemini-embedding-001"
             self.dimension = 768
             
         elif self.provider == 'cohere':
@@ -455,7 +455,10 @@ class APIEmbeddingModel:
             result = client.models.embed_content(
                 model=self.model_name,
                 contents=texts,
-                config=genai.types.EmbedContentConfig(task_type="RETRIEVAL_QUERY")
+                config=genai.types.EmbedContentConfig(
+                    task_type="RETRIEVAL_QUERY",
+                    output_dimensionality=self.dimension
+                )
             )
         except Exception as e:
             # Network or API failure — let outer retry handle it
